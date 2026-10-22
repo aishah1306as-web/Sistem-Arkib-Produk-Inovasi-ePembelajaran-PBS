@@ -1,0 +1,146 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions for institutional authentication & roles
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+
+    function isSuperAdmin() {
+      return hasRole('super_admin');
+    }
+
+    function isUePMAdmin() {
+      return hasRole('pentadbir_uepm');
+    }
+
+    function isDepartmentOfficer() {
+      return hasRole('pegawai_jabatan');
+    }
+
+    function isLecturer() {
+      return hasRole('pensyarah');
+    }
+
+    function isSameDepartment(deptId) {
+      return getUserData().departmentId == 'SEMUA' || getUserData().departmentId == deptId;
+    }
+
+    // ==========================================
+    // 1. USERS COLLECTION
+    // ==========================================
+    match /users/{userId} {
+      // Super admin can read & write all users
+      // Users can read their own profile
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isSuperAdmin() || isUePMAdmin());
+      allow create, delete: if isSuperAdmin();
+      allow update: if isSuperAdmin() || (request.auth.uid == userId && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'active']));
+    }
+
+    // ==========================================
+    // 2. PRODUCTS COLLECTION
+    // ==========================================
+    match /products/{productId} {
+      // Approved products are readable by any authenticated user
+      // Non-approved products are readable by super_admin, uepm, department officer of same dept, or creator
+      allow read: if isAuthenticated() && (
+        resource.data.registrationStatus == 'Diluluskan' ||
+        isSuperAdmin() ||
+        isUePMAdmin() ||
+        (isDepartmentOfficer() && isSameDepartment(resource.data.departmentId)) ||
+        resource.data.primaryCreatorUid == request.auth.uid ||
+        resource.data.createdBy == request.auth.uid
+      );
+
+      // Anyone except pengurusan can create draft or submit
+      allow create: if isAuthenticated() && 
+                    !hasRole('pengurusan') &&
+                    request.resource.data.primaryCreatorUid == request.auth.uid &&
+                    request.resource.data.registrationStatus in ['Draf', 'Dihantar untuk Semakan'];
+
+      // Update rules:
+      // - Creator can only edit if Draf or Memerlukan Pembetulan (cannot self-approve)
+      // - Super Admin & UePM can approve or update
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        isUePMAdmin() ||
+        (
+          resource.data.primaryCreatorUid == request.auth.uid &&
+          resource.data.registrationStatus in ['Draf', 'Memerlukan Pembetulan'] &&
+          request.resource.data.registrationStatus in ['Draf', 'Dihantar untuk Semakan']
+        )
+      );
+
+      // Approved products cannot be permanently deleted by normal workflow
+      allow delete: if isSuperAdmin() && resource.data.registrationStatus != 'Diluluskan';
+    }
+
+    // ==========================================
+    // 3. ACHIEVEMENTS COLLECTION
+    // ==========================================
+    match /achievements/{achievementId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && !hasRole('pengurusan');
+      // Only Super Admin and UePM can verify achievements
+      allow update: if isAuthenticated() && (
+        isSuperAdmin() ||
+        isUePMAdmin() ||
+        (resource.data.submittedBy == request.auth.uid && resource.data.verificationStatus != 'Disahkan')
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // ==========================================
+    // 4. DOCUMENTS COLLECTION
+    // ==========================================
+    match /documents/{documentId} {
+      allow read: if isAuthenticated() && (
+        resource.data.accessClassification in ['Awam', 'Dalaman'] ||
+        isSuperAdmin() ||
+        isUePMAdmin() ||
+        (resource.data.accessClassification == 'Terhad' && isSameDepartment(resource.data.departmentId)) ||
+        resource.data.uploadedBy == request.auth.uid
+      );
+      allow create: if isAuthenticated() && !hasRole('pengurusan');
+      allow update: if isAuthenticated() && (isSuperAdmin() || resource.data.uploadedBy == request.auth.uid);
+      allow delete: if isSuperAdmin();
+    }
+
+    // ==========================================
+    // 5. AUDIT LOGS (Immutable)
+    // ==========================================
+    match /auditLogs/{logId} {
+      allow read: if isSuperAdmin() || isUePMAdmin();
+      allow create: if isAuthenticated();
+      // No updates or deletes allowed for audit integrity
+      allow update, delete: if false;
+    }
+
+    // ==========================================
+    // 6. SYSTEM SETTINGS & DEPARTMENTS
+    // ==========================================
+    match /systemSettings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    match /departments/{deptId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+
+    match /categories/{catId} {
+      allow read: if isAuthenticated();
+      allow write: if isSuperAdmin();
+    }
+  }
+}

@@ -1,0 +1,33 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isSafeFile() {
+      // Reject executables and dangerous extensions
+      return !request.resource.name.matches('.*\\.(exe|bat|cmd|sh|ps1|vbs|msi|dll|com|scr|jar|php|asp)$') &&
+             request.resource.size < 25 * 1024 * 1024; // Max 25 MB
+    }
+
+    // Product Images / Thumbnails
+    match /thumbnails/{productId}/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isSafeFile();
+    }
+
+    // Supporting Documents & Reports
+    match /archive/{year}/{productId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isSafeFile();
+    }
+
+    // Certificates
+    match /certificates/{achievementId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && isSafeFile();
+    }
+  }
+}
